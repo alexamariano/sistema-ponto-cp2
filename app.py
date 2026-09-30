@@ -358,5 +358,15 @@ def get_espelho():
         "registros": registros
     })
 
+@app.route('/api/todas_batidas', methods=['GET'])
+def get_todas_batidas():
+    conn = sqlite3.connect('ponto.db')
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM batidas ORDER BY data_hora ASC")
+    registros = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(registros)
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
