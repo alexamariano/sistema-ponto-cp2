@@ -487,5 +487,56 @@ def fechar_agora():
     status_code = 200 if sucesso else 500
     return jsonify({"sucesso": sucesso, "detalhes": mensagem}), status_code
 
+@app.route('/admin', methods=['GET'])
+def painel_admin():
+    conn = sqlite3.connect('ponto.db')
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    # Puxa tudo, do mais recente para o mais antigo
+    cursor.execute("SELECT * FROM batidas ORDER BY data_hora DESC")
+    registros = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    
+    html = """
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8"><title>Auditoria do Banco - DATATEMPO/CP2</title>
+        <style>
+            body { font-family: Arial, sans-serif; padding: 20px; }
+            table { width: 100%; border-collapse: collapse; margin-top: 20px; font-size: 0.9em; }
+            th, td { border: 1px solid #ddd; padding: 8px; text-align: left; }
+            th { background-color: #3182ce; color: white; }
+            tr:nth-child(even) { background-color: #f2f2f2; }
+            .badge-inicio { color: green; font-weight: bold; }
+            .badge-fim { color: red; font-weight: bold; }
+        </style>
+    </head>
+    <body>
+        <h2>Auditoria de Dados na Nuvem (Render)</h2>
+        <p>Total de batidas registradas no servidor: <b>{{ registros|length }}</b></p>
+        <table>
+            <tr>
+                <th>Data / Hora (BR)</th>
+                <th>Pessoa</th>
+                <th>Tipo</th>
+                <th>Projeto</th>
+                <th>ID da Batida</th>
+            </tr>
+            {% for r in registros %}
+            <tr>
+                <td>{{ r.data_hora }}</td>
+                <td>{{ r.pessoa_id }} - {{ r.nome }}</td>
+                <td class="{% if r.tipo == 'INÍCIO' %}badge-inicio{% else %}badge-fim{% endif %}">{{ r.tipo }}</td>
+                <td>{{ r.projeto }}</td>
+                <td style="font-size: 0.8em; color: gray;">{{ r.batida_id }}</td>
+            </tr>
+            {% endfor %}
+        </table>
+    </body>
+    </html>
+    """
+    return render_template_string(html, registros=registros)
+
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
