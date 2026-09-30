@@ -3,6 +3,7 @@ import pandas as pd
 import openpyxl
 import os
 import smtplib
+import socket
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
@@ -17,9 +18,9 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # ==========================================
 # CONFIGURAÇÕES DE E-MAIL E AGENDAMENTO
 # ==========================================
-EMAIL_REMETENTE = "alexde@gmail.com"
-SENHA_APP_EMAIL = "tctxosvhnfegmyek"
-EMAIL_DESTINATARIO = "alexdealm@gmail.com"
+EMAIL_REMETENTE = os.environ.get("EMAIL_REMETENTE", "alexde@gmail.com")
+SENHA_APP_EMAIL = os.environ.get("SENHA_APP_EMAIL", "tctxosvhnfegmyek")
+EMAIL_DESTINATARIO = os.environ.get("EMAIL_DESTINATARIO", "alexdealm@gmail.com")
 MODELO_EXCEL = "Sistema_de_Horas_Trabalhadas_DATATEMPO_CP2_conciliacao_automatica (1).xlsx"
 
 # --- 1. BASE DE DADOS CADASTRAIS (DATATEMPO) ---
@@ -202,8 +203,10 @@ def fechar_folha_e_enviar():
             part['Content-Disposition'] = f'attachment; filename="{os.path.basename(nome_saida)}"'
             msg.attach(part)
 
-        servidor = smtplib.SMTP('smtp.gmail.com', 587, timeout=15)
-        servidor.starttls()
+        # Força o uso do protocolo IPv4 (resolve o erro [Errno 101] Network is unreachable)
+        ip_ipv4_gmail = socket.gethostbyname('smtp.gmail.com')
+        servidor = smtplib.SMTP_SSL(ip_ipv4_gmail, 465, timeout=15)
+        servidor.ehlo()
         servidor.login(EMAIL_REMETENTE, SENHA_APP_EMAIL)
         servidor.send_message(msg)
         servidor.quit()
@@ -217,7 +220,7 @@ def fechar_folha_e_enviar():
         print(f"[AUTOMAÇÃO ERRO] {msg_erro}")
         return False, msg_erro
 
-# Iniciar Agendador de Tarefas em Segundo Plano (Roda todo dia às 18:30)
+# Agendador de tarefas em segundo plano (Todo dia às 18:30)
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=fechar_folha_e_enviar, trigger="cron", hour=18, minute=30, timezone=FUSO_BR)
 scheduler.start()
