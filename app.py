@@ -1,10 +1,14 @@
 import sqlite3
 from flask import Flask, request, jsonify, render_template_string
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 
-# --- 1. BASE DE DADOS CADASTRAIS (Extraídos do Excel) ---
+# Fuso horário padrão do Brasil
+FUSO_BR = ZoneInfo("America/Sao_Paulo")
+
+# --- 1. BASE DE DADOS CADASTRAIS (DATATEMPO) ---
 PESSOAS = {
     "1001": "Adriana Pereira dos Santos",
     "1002": "Alex de Almeida Mariano",
@@ -54,7 +58,6 @@ ATIVIDADES = [
     {"codigo": "ATV-012", "nome": "MODERAÇÃO"}
 ]
 
-# --- 2. INICIALIZAÇÃO DO BANCO DE DADOS DE BATIDAS ---
 def init_db():
     conn = sqlite3.connect('ponto.db')
     cursor = conn.cursor()
@@ -70,7 +73,8 @@ def init_db():
             projeto TEXT,
             atividade TEXT,
             observacao TEXT,
-            origem TEXT
+            origem TEXT,
+            inicio_vinculado TEXT
         )
     ''')
     conn.commit()
@@ -78,7 +82,7 @@ def init_db():
 
 init_db()
 
-# --- 3. INTERFACE HTML ---
+# --- 2. INTERFACE HTML ---
 HTML = """
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -154,8 +158,8 @@ HTML = """
         </div>
 
         <div class="btn-group">
-            <button class="btn btn-inicio" onclick="registrar('INÍCIO')">INÍCIO</button>
-            <button class="btn btn-fim" onclick="registrar('FIM')">FIM</button>
+            <button class="btn btn-inicio" id="btn-in" onclick="registrar('INÍCIO')">INÍCIO</button>
+            <button class="btn btn-fim" id="btn-out" onclick="registrar('FIM')">FIM</button>
         </div>
 
         <button class="btn btn-espelho" onclick="carregarEspelho()">Ver Meu Espelho de Hoje</button>
@@ -195,6 +199,10 @@ HTML = """
                 return;
             }
 
+            // Desabilita botões temporariamente
+            document.getElementById('btn-in').disabled = true;
+            document.getElementById('btn-out').disabled = true;
+
             const payload = {
                 pessoa_id: pessoa_id,
                 projeto: document.getElementById('projeto').value,
@@ -203,19 +211,26 @@ HTML = """
                 tipo: tipo
             };
 
-            const response = await fetch('/api/bater_ponto', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            try {
+                const response = await fetch('/api/bater_ponto', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
 
-            const result = await response.json();
-            if (response.ok) {
-                alert(result.mensagem);
-                document.getElementById('observacao').value = '';
-                carregarEspelho();
-            } else {
-                alert("Erro: " + result.erro);
+                const result = await response.json();
+                if (response.ok) {
+                    alert(result.mensagem);
+                    document.getElementById('observacao').value = '';
+                    carregarEspelho();
+                } else {
+                    alert("Erro: " + result.erro);
+                }
+            } catch (err) {
+                alert("Erro de conexão ao salvar ponto.");
+            } finally {
+                document.getElementById('btn-in').disabled = false;
+                document.getElementById('btn-out').disabled = false;
             }
         }
 
@@ -259,7 +274,7 @@ HTML = """
 </html>
 """
 
-# --- 4. ROTAS DO SERVIDOR ---
+# --- 3. ROTAS DA APLICAÇÃO ---
 @app.route('/')
 def index():
     return render_template_string(HTML, pessoas=PESSOAS, projetos=PROJETOS, atividades=ATIVIDADES)
@@ -269,12 +284,13 @@ def bater_ponto():
     dados = request.json
     pessoa_id = str(dados.get('pessoa_id', '')).strip()
     
-    # Valida se a pessoa existe no cadastro
     if pessoa_id not in PESSOAS:
         return jsonify({"erro": f"ID {pessoa_id} não encontrado no cadastro de pessoas!"}), 400
 
     nome_pessoa = PESSOAS[pessoa_id]
-    agora = datetime.now()
+    
+    # PEGA HORA NO FUSO DO BRASIL (UTC-3)
+    agora = datetime.now(FUSO_BR)
     
     data_hora = agora.strftime('%Y-%m-%d %H:%M:%S')
     data = agora.strftime('%Y-%m-%d')
@@ -292,10 +308,24 @@ def bater_ponto():
 
     conn = sqlite3.connect('ponto.db')
     cursor = conn.cursor()
+
+    # Se for FIM, busca o id da batida de INÍCIO para vincular
+    inicio_vinculado = None
+    if tipo == 'FIM':
+        cursor.execute('''
+            SELECT batida_id FROM batidas 
+            WHERE pessoa_id = ? AND tipo = 'INÍCIO' AND data = ?
+            ORDER BY data_hora DESC LIMIT 1
+        ''', (pessoa_id, data))
+        row = cursor.fetchone()
+        if row:
+            inicio_vinculado = row[0]
+
     cursor.execute('''
-        INSERT INTO batidas (batida_id, data_hora, data, dia_semana, pessoa_id, nome, tipo, projeto, atividade, observacao, origem)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (batida_id, data_hora, data, dia_semana, pessoa_id, nome_pessoa, tipo, projeto, atividade, observacao, origem))
+        INSERT INTO batidas (batida_id, data_hora, data, dia_semana, pessoa_id, nome, tipo, projeto, atividade, observacao, origem, inicio_vinculado)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ''', (batida_id, data_hora, data, dia_semana, pessoa_id, nome_pessoa, tipo, projeto, atividade, observacao, origem, inicio_vinculado))
+    
     conn.commit()
     conn.close()
 
@@ -308,7 +338,8 @@ def get_espelho():
     if pessoa_id not in PESSOAS:
         return jsonify({"erro": "ID inválido."}), 400
 
-    data_hoje = datetime.now().strftime('%Y-%m-%d')
+    agora = datetime.now(FUSO_BR)
+    data_hoje = agora.strftime('%Y-%m-%d')
     
     conn = sqlite3.connect('ponto.db')
     conn.row_factory = sqlite3.Row
