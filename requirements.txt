@@ -3,3 +3,4 @@ gunicorn
 pandas
 openpyxl
 apscheduler
+resend

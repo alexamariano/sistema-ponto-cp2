@@ -2,11 +2,8 @@ import sqlite3
 import pandas as pd
 import openpyxl
 import os
-import smtplib
-import socket
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.application import MIMEApplication
+import base64
+import resend
 from flask import Flask, request, jsonify, render_template_string
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -16,12 +13,14 @@ app = Flask(__name__)
 FUSO_BR = ZoneInfo("America/Sao_Paulo")
 
 # ==========================================
-# CONFIGURAÇÕES DE E-MAIL E AGENDAMENTO
+# CONFIGURAÇÕES DE E-MAIL E NUVEM
 # ==========================================
-EMAIL_REMETENTE = os.environ.get("EMAIL_REMETENTE", "alexde@gmail.com")
-SENHA_APP_EMAIL = os.environ.get("SENHA_APP_EMAIL", "tctxosvhnfegmyek")
-EMAIL_DESTINATARIO = os.environ.get("EMAIL_DESTINATARIO", "alexdealm@gmail.com")
+# Cole aqui a sua API Key gerada no Resend (começa com re_...)
+RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "SUA_API_KEY_RESEND_AQUI")
+EMAIL_DESTINATARIO = "alexdealm@gmail.com"
 MODELO_EXCEL = "Sistema_de_Horas_Trabalhadas_DATATEMPO_CP2_conciliacao_automatica (1).xlsx"
+
+resend.api_key = RESEND_API_KEY
 
 # --- 1. BASE DE DADOS CADASTRAIS (DATATEMPO) ---
 PESSOAS = {
@@ -68,7 +67,7 @@ def init_db():
 
 init_db()
 
-# --- 2. MOTOR DE FECHAMENTO E ENVIO DE E-MAIL ---
+# --- 2. MOTOR DE FECHAMENTO E ENVIO DE E-MAIL VIA API HTTP ---
 def fechar_folha_e_enviar():
     print("[AUTOMAÇÃO] Iniciando fechamento da folha e envio por e-mail...")
     try:
@@ -120,8 +119,6 @@ def fechar_folha_e_enviar():
             atividade = str(batida['atividade'])
             observacao = str(batida.get('observacao', '')) if pd.notna(batida.get('observacao')) else ''
             
-            data_serial = (dt_obj - datetime(1899, 12, 30)).total_seconds() / (24 * 3600)
-            data_inteira = int(data_serial)
             dia_semana_num = dt_obj.weekday()
             dias_str = ["SEGUNDA-FEIRA", "TERÇA-FEIRA", "QUARTA-FEIRA", "QUINTA-FEIRA", "SEXTA-FEIRA", "SÁBADO", "DOMINGO"]
             dia_semana = dias_str[dia_semana_num]
@@ -189,38 +186,39 @@ def fechar_folha_e_enviar():
         timestamp = datetime.now(FUSO_BR).strftime('%Y%m%d_%H%M%S')
         nome_saida = f'Sistema_Conciliacao_Final_{timestamp}.xlsx'
         wb.save(nome_saida)
-        print(f"[AUTOMAÇÃO] Planilha {nome_saida} gerada. Enviando e-mail...")
+        print(f"[AUTOMAÇÃO] Planilha {nome_saida} gerada. Enviando via API do Resend...")
 
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_REMETENTE
-        msg['To'] = EMAIL_DESTINATARIO
-        msg['Subject'] = f"Relatório de Fechamento de Ponto - {datetime.now(FUSO_BR).strftime('%d/%m/%Y')}"
-        corpo = "Olá,\n\nSegue em anexo a planilha consolidada com o fechamento automático do ponto e cálculos de pagamento atualizados.\n\nEste é um e-mail automático enviado pelo Sistema de Ponto CP2."
-        msg.attach(MIMEText(corpo, 'plain'))
-
+        # Converte o arquivo Excel para Base64 para anexar via API
         with open(nome_saida, "rb") as f:
-            part = MIMEApplication(f.read(), Name=os.path.basename(nome_saida))
-            part['Content-Disposition'] = f'attachment; filename="{os.path.basename(nome_saida)}"'
-            msg.attach(part)
+            excel_bytes = f.read()
+            excel_b64 = base64.b64encode(excel_bytes).decode('utf-8')
 
-        # Força o uso do protocolo IPv4 (resolve o erro [Errno 101] Network is unreachable)
-        ip_ipv4_gmail = socket.gethostbyname('smtp.gmail.com')
-        servidor = smtplib.SMTP_SSL(ip_ipv4_gmail, 465, timeout=15)
-        servidor.ehlo()
-        servidor.login(EMAIL_REMETENTE, SENHA_APP_EMAIL)
-        servidor.send_message(msg)
-        servidor.quit()
+        # Envio do e-mail usando Resend (API HTTP - Porta 443)
+        params = {
+            "from": "Sistema Ponto CP2 <onboarding@resend.dev>",
+            "to": [EMAIL_DESTINATARIO],
+            "subject": f"Relatório de Fechamento de Ponto - {datetime.now(FUSO_BR).strftime('%d/%m/%Y')}",
+            "html": "<p>Olá,</p><p>Segue em anexo a planilha consolidada do fechamento automático do ponto com os cálculos atualizados.</p><p><i>E-mail enviado automaticamente pelo Sistema DATATEMPO/CP2.</i></p>",
+            "attachments": [
+                {
+                    "filename": nome_saida,
+                    "content": excel_b64
+                }
+            ]
+        }
+
+        email_res = resend.Emails.send(params)
         
-        msg_sucesso = f"Planilha gerada ({nome_saida}) e e-mail enviado com sucesso para {EMAIL_DESTINATARIO}!"
+        msg_sucesso = f"Planilha gerada ({nome_saida}) e e-mail enviado via Resend (ID: {email_res.get('id', 'ok')}) para {EMAIL_DESTINATARIO}!"
         print(f"[AUTOMAÇÃO SUCESSO] {msg_sucesso}")
         return True, msg_sucesso
         
     except Exception as e:
-        msg_erro = f"Falha no processo: {str(e)}"
+        msg_erro = f"Falha no processo via API Resend: {str(e)}"
         print(f"[AUTOMAÇÃO ERRO] {msg_erro}")
         return False, msg_erro
 
-# Agendador de tarefas em segundo plano (Todo dia às 18:30)
+# Agendador de tarefas automático (Todo dia às 18:30)
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=fechar_folha_e_enviar, trigger="cron", hour=18, minute=30, timezone=FUSO_BR)
 scheduler.start()
