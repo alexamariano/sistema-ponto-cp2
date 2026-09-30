@@ -1,0 +1,148 @@
+SCRIPT PLANILHA PONTO CP2
+
+
+function validarBatida(r: number): string{
+const m=`MATCH(L${r},tblBatidas[Batida ID],0)`;
+const start=c=>`INDEX(tblBatidas[${c}],${m})`;
+let f='"VINCULADO"';
+f=`IF(OR(B${r}<=${start('Data e hora')},(B${r}-${start('Data e hora')})*24>16),"HORÁRIO INVÁLIDO",${f})`;
+f=`IF(I${r}<>${start('Atividade')},"DIVERGÊNCIA DE ATIVIDADE",${f})`;
+f=`IF(H${r}<>${start('Projeto')},"DIVERGÊNCIA DE PROJETO",${f})`;
+f=`IF(E${r}<>${start('ID')},"DIVERGÊNCIA DE ID",${f})`;
+f=`IF(COUNTIF(tblBatidas[Início vinculado],L${r})>1,"VÍNCULO DUPLICADO",${f})`;
+f=`IF(COUNTIF(tblBatidas[Batida ID],L${r})=0,"VÍNCULO INVÁLIDO",${f})`;
+return `=IF(G${r}="FIM",IF(L${r}="","SEM VÍNCULO",${f}),"INÍCIO")`;
+}
+function linkedRow(r: number): string[]{
+const sid=`\"B\"&MID($A${r},2,99)`,start=`MATCH(${sid},tblBatidas[Batida ID],0)`,end=`MATCH(${sid},tblBatidas[Início vinculado],0)`;
+const sb=`INDEX(tblBatidas[Data e hora],${start})`,eb=`INDEX(tblBatidas[Data e hora],${end})`,be=`INDEX(tblBatidas[ID],${start})`;
+const row=[
+`=IFERROR(INT(${sb}),\"\")`,
+`=IF(B${r}=\"\",\"\",CHOOSE(WEEKDAY(B${r},2),\"SEGUNDA-FEIRA\",\"TERÇA-FEIRA\",\"QUARTA-FEIRA\",\"QUINTA-FEIRA\",\"SEXTA-FEIRA\",\"SÁBADO\",\"DOMINGO\"))`,
+`=IF(B${r}=\"\",\"\",IF(WEEKDAY(B${r},2)>5,\"FDS/FERIADO\",\"DIA ÚTIL\"))`,
+`=IFERROR(${be},\"\")`,
+`=IFERROR(INDEX(tblPessoas[Pessoa],MATCH(E${r},tblPessoas[ID],0)),\"\")`,
+`=IFERROR(INDEX(tblBatidas[Projeto],${start}),\"\")`,
+`=IFERROR(INDEX(tblBatidas[Atividade],${start}),\"\")`,
+`=IFERROR(MOD(${sb},1),\"\")`,
+`=IFERROR(MOD(${eb},1),\"\")`,
+`=IFERROR((${eb}-${sb})*24,\"\")`,
+`=IFERROR(INDEX(tblBatidas[Observação],${end}),\"\")`,
+`=IFERROR(INDEX(tblPessoas[Base],MATCH(E${r},tblPessoas[ID],0)),\"\")`,
+`=IFERROR(IF(D${r}=\"DIA ÚTIL\",INDEX(tblPessoas[R$/h útil],MATCH(E${r},tblPessoas[ID],0)),INDEX(tblPessoas[R$/h FDS],MATCH(E${r},tblPessoas[ID],0))),0)`,
+`=IFERROR(INDEX(tblPessoas[R$/diária],MATCH(E${r},tblPessoas[ID],0)),0)`,
+`=IF(Q${r}<>\"CONCLUÍDO\",\"\",IF(M${r}=\"Diária\",O${r}*R${r},K${r}*N${r}))`,
+`=IF(A${r}=\"\",\"\",IF(COUNTIF(tblBatidas[Início vinculado],${sid})=0,\"EM ABERTO\",IF(OR(COUNTIF(tblBatidas[Início vinculado],${sid})>1,K${r}<0,K${r}>16,INT(${eb})<>B${r},INDEX(tblBatidas[ID],${end})<>E${r},INDEX(tblBatidas[Projeto],${end})<>G${r},INDEX(tblBatidas[Atividade],${end})<>H${r}),\"REVISAR\",\"CONCLUÍDO\")))`,
+`=IF(Q${r}<>\"CONCLUÍDO\",0,IF(COUNTIFS($E$5:E${r},E${r},$B$5:B${r},B${r},$Q$5:Q${r},\"CONCLUÍDO\")=1,1,0))`,
+`=IF(B${r}=\"\",\"\",TEXT(B${r},\"yyyy-mm\"))`,
+`=IF(E${r}=\"\",\"\",E${r}*100000+COUNTIFS(tblRegistros[ID],E${r},tblRegistros[Data],\"<\"&B${r})+COUNTIFS(tblRegistros[ID],E${r},tblRegistros[Data],B${r},tblRegistros[Início],\"<\"&I${r})+COUNTIFS($E$5:E${r},E${r},$B$5:B${r},B${r},$I$5:I${r},I${r}))`
+];
+return row;
+}
+function main(workbook: ExcelScript.Workbook) {
+const painel = workbook.getWorksheet("Registrar Ponto");
+const pessoas = workbook.getWorksheet("Cadastro Pessoas").getTable("tblPessoas");
+const projetos = workbook.getWorksheet("Cadastro Projetos").getTable("tblProjetos");
+const atividades = workbook.getWorksheet("Cadastro Atividades").getTable("tblAtividades");
+const batidas = workbook.getWorksheet("Batidas").getTable("tblBatidas");
+const registros = workbook.getWorksheet("Registros").getTable("tblRegistros");
+const id = String(painel.getRange("C6").getValue()).trim();
+const tipo = String(painel.getRange("C10").getValue()).trim().toUpperCase();
+const projeto = String(painel.getRange("C12").getValue()).trim();
+const atividade = String(painel.getRange("C14").getValue()).trim();
+const observacao = String(painel.getRange("C16").getValue()).trim();
+if (!id || !["INÍCIO","FIM"].includes(tipo) || !projeto || !atividade) {
+painel.getRange("C19").setValue("PREENCHA ID, TIPO, PROJETO E ATIVIDADE.");
+return;
+}
+const pRows = pessoas.getRangeBetweenHeaderAndTotal().getValues();
+const p = pRows.find(r => String(r[0]).trim() === id && String(r[7]).toUpperCase() === "ATIVO");
+if (!p) { painel.getRange("C19").setValue("ID NÃO ENCONTRADO OU INATIVO."); return; }
+const nome = String(p[1]);
+const base = String(p[2]);
+const taxaUtil = Number(p[3]) || 0;
+const taxaFds = Number(p[4]) || 0;
+const diaria = Number(p[5]) || 0;
+const prjOk = projetos.getRangeBetweenHeaderAndTotal().getValues().some(r => String(r[1]) === projeto && String(r[3]).toUpperCase() === "ATIVO");
+const atvOk = atividades.getRangeBetweenHeaderAndTotal().getValues().some(r => String(r[1]) === atividade && String(r[3]).toUpperCase() === "ATIVO");
+if (!prjOk || !atvOk) { painel.getRange("C19").setValue("PROJETO OU ATIVIDADE FORA DO CADASTRO ATIVO."); return; }
+// Integra novos cadastros aos relatórios de período.
+const resumoSheet = workbook.getWorksheet("Resumo Pagamentos");
+const resumoIds = resumoSheet.getRange("A7:A106").getValues();
+let resumoPos = resumoIds.findIndex(r => String(r[0]) === id);
+if (resumoPos < 0) resumoPos = resumoIds.findIndex(r => String(r[0]).trim() === "");
+if (resumoPos < 0) { painel.getRange("C19").setValue("LIMITE DE PESSOAS NO RESUMO."); return; }
+const rr = 7 + resumoPos;
+if (String(resumoIds[resumoPos][0]).trim() === "") {
+resumoSheet.getRange("A"+rr+":C"+rr).setValues([[Number(id),nome,base]]);
+resumoSheet.getRange("H"+rr+":J"+rr).setValues([[taxaUtil,taxaFds,diaria]]);
+resumoSheet.getRange("L"+rr).setValue(0);
+const crit = "'Registros'!$E$5:$E$3004,A"+rr+",'Registros'!$B$5:$B$3004,\">=\"&$B$4,'Registros'!$B$5:$B$3004,\"<\"&($D$4+1),'Registros'!$Q$5:$Q$3004,\"CONCLUÍDO\"";
+resumoSheet.getRange("D"+rr).setFormula("=SUMIFS('Registros'!$K$5:$K$3004,"+crit+",'Registros'!$D$5:$D$3004,\"DIA ÚTIL\")");
+resumoSheet.getRange("E"+rr).setFormula("=SUMIFS('Registros'!$K$5:$K$3004,"+crit+",'Registros'!$D$5:$D$3004,\"FDS/FERIADO\")");
+resumoSheet.getRange("F"+rr).setFormula("=D"+rr+"+E"+rr);
+resumoSheet.getRange("G"+rr).setFormula("=SUMIFS('Registros'!$R$5:$R$3004,"+crit+")");
+resumoSheet.getRange("K"+rr).setFormula("=SUMIFS('Registros'!$P$5:$P$3004,"+crit+")");
+resumoSheet.getRange("M"+rr).setFormula("=K"+rr+"+L"+rr);
+resumoSheet.getRange("N"+rr).setFormula("=COUNTIFS('Registros'!$E$5:$E$3004,A"+rr+",'Registros'!$B$5:$B$3004,\">=\"&$B$4,'Registros'!$B$5:$B$3004,\"<\"&($D$4+1),'Registros'!$Q$5:$Q$3004,\"EM ABERTO\")+COUNTIFS('Registros'!$E$5:$E$3004,A"+rr+",'Registros'!$B$5:$B$3004,\">=\"&$B$4,'Registros'!$B$5:$B$3004,\"<\"&($D$4+1),'Registros'!$Q$5:$Q$3004,\"REVISAR\")");
+}
+const custoSheet = workbook.getWorksheet("Custo por Projeto");
+const custoProjetos = custoSheet.getRange("B7:B156").getValues();
+let custoPos = custoProjetos.findIndex(r => String(r[0]) === projeto);
+if (custoPos < 0) custoPos = custoProjetos.findIndex(r => String(r[0]).trim() === "");
+if (custoPos < 0) { painel.getRange("C19").setValue("LIMITE DE PROJETOS NO RESUMO."); return; }
+const rc = 7 + custoPos;
+if (String(custoProjetos[custoPos][0]).trim() === "") {
+const projetoRow = projetos.getRangeBetweenHeaderAndTotal().getValues().find(r => String(r[1]) === projeto);
+custoSheet.getRange("A"+rc+":B"+rc).setValues([[String(projetoRow[0]),projeto]]);
+const critP = "'Registros'!$G$5:$G$3004,B"+rc+",'Registros'!$B$5:$B$3004,\">=\"&$B$4,'Registros'!$B$5:$B$3004,\"<\"&($D$4+1),'Registros'!$Q$5:$Q$3004,\"CONCLUÍDO\"";
+custoSheet.getRange("C"+rc).setFormula("=SUMIFS('Registros'!$K$5:$K$3004,"+critP+",'Registros'!$D$5:$D$3004,\"DIA ÚTIL\")");
+custoSheet.getRange("D"+rc).setFormula("=SUMIFS('Registros'!$K$5:$K$3004,"+critP+",'Registros'!$D$5:$D$3004,\"FDS/FERIADO\")");
+custoSheet.getRange("E"+rc).setFormula("=C"+rc+"+D"+rc);
+custoSheet.getRange("F"+rc).setFormula("=COUNTIFS("+critP+")");
+custoSheet.getRange("G"+rc).setFormula("=IF(F"+rc+"=0,0,ROWS(UNIQUE(FILTER('Registros'!$E$5:$E$3004,('Registros'!$G$5:$G$3004=B"+rc+")*('Registros'!$B$5:$B$3004>=$B$4)*('Registros'!$B$5:$B$3004<=$D$4)*('Registros'!$Q$5:$Q$3004=\"CONCLUÍDO\")))))");
+custoSheet.getRange("H"+rc).setFormula("=SUMIFS('Registros'!$P$5:$P$3004,"+critP+")");
+}
+const agoraUTC = new Date();
+const agoraBR = new Date(agoraUTC.getTime() - 3 * 60 * 60 * 1000);
+const serial = (Date.UTC(agoraBR.getUTCFullYear(), agoraBR.getUTCMonth(), agoraBR.getUTCDate(), agoraBR.getUTCHours(), agoraBR.getUTCMinutes(), agoraBR.getUTCSeconds()) - Date.UTC(1899, 11, 30)) / 86400000;
+const dataSerial = Math.floor(serial);
+const horaSerial = serial - dataSerial;
+const dias = ["DOMINGO","SEGUNDA-FEIRA","TERÇA-FEIRA","QUARTA-FEIRA","QUINTA-FEIRA","SEXTA-FEIRA","SÁBADO"];
+const diaSemana = dias[agoraBR.getUTCDay()];
+const batidaId = "B" + agoraBR.getUTCFullYear() + String(agoraBR.getUTCMonth()+1).padStart(2,"0") + String(agoraBR.getUTCDate()).padStart(2,"0") + String(agoraBR.getUTCHours()).padStart(2,"0") + String(agoraBR.getUTCMinutes()).padStart(2,"0") + String(agoraBR.getUTCSeconds()).padStart(2,"0") + "-" + id;
+const rRows = registros.getRangeBetweenHeaderAndTotal().getValues();
+let aberta = -1;
+for (let i = rRows.length - 1; i >= 0; i--) {
+if (String(rRows[i][4]) === id && Number(rRows[i][1]) === dataSerial && String(rRows[i][16]).toUpperCase() === "EM ABERTO") { aberta = i; break; }
+}
+function adicionarBatida(vinculo: string) {
+batidas.addRow(-1, [batidaId,serial,"","",Number(id),nome,tipo,projeto,atividade,observacao,"SharePoint / Office Script",vinculo,""]);
+const br = batidas.getRangeBetweenHeaderAndTotal().getRowCount() + 4;
+const bs = workbook.getWorksheet("Batidas");
+bs.getRange("C"+br).setFormula("=INT(B"+br+")");
+bs.getRange("D"+br).setFormula("=CHOOSE(WEEKDAY(C"+br+",2),\"SEGUNDA-FEIRA\",\"TERÇA-FEIRA\",\"QUARTA-FEIRA\",\"QUINTA-FEIRA\",\"SEXTA-FEIRA\",\"SÁBADO\",\"DOMINGO\")");
+bs.getRange("M"+br).setFormula(validarBatida(br));
+}
+if (tipo === "INÍCIO") {
+if (aberta >= 0) { painel.getRange("C19").setValue("JÁ EXISTE UM INÍCIO EM ABERTO HOJE."); return; }
+adicionarBatida("");
+const regId = "R" + batidaId.substring(1);
+registros.addRow(-1,[regId,"","","","","","","","","","","","","","","","","","",""]);
+const nr = registros.getRangeBetweenHeaderAndTotal().getRowCount() + 4;
+workbook.getWorksheet("Registros").getRange("B"+nr+":T"+nr).setFormulas([linkedRow(nr)]);
+} else {
+if (aberta < 0) { painel.getRange("C19").setValue("NÃO HÁ INÍCIO EM ABERTO HOJE PARA ESTE ID."); return; }
+if (String(rRows[aberta][6]) !== projeto || String(rRows[aberta][7]) !== atividade) { painel.getRange("C19").setValue("PROJETO/ATIVIDADE DIFERENTES DO INÍCIO."); return; }
+const horas = (serial - (Number(rRows[aberta][1]) + Number(rRows[aberta][8]))) * 24;
+if (horas < 0 || horas > 16) { painel.getRange("C19").setValue("INTERVALO INVÁLIDO OU ACIMA DE 16 HORAS."); return; }
+adicionarBatida("B" + String(rRows[aberta][0]).substring(1));
+}
+// Limpa os dados somente após um registro válido.
+painel.getRange("C6").setValue("");
+painel.getRange("C10").setValue("");
+painel.getRange("C12").setValue("");
+painel.getRange("C14").setValue("");
+painel.getRange("C16").setValue("");
+painel.getRange("C19").setValue("REGISTRO REALIZADO COM SUCESSO. PAINEL LIMPO PARA O PRÓXIMO USUÁRIO.");
+}
