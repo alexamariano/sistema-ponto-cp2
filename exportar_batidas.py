@@ -1,3 +1,4 @@
+import requests
 import sqlite3
 import pandas as pd
 import openpyxl
@@ -24,14 +25,19 @@ def exportar_para_excel():
                     'diaria': float(row['R$/diária']) if pd.notna(row['R$/diária']) else 0.0
                 }
 
-        # 2. LER BATIDAS DO BANCO DE DADOS LOCAL (HTML)
-        conn = sqlite3.connect(NOME_BANCO)
-        df_batidas = pd.read_sql_query("SELECT * FROM batidas ORDER BY data_hora ASC", conn)
-        conn.close()
-
-        if df_batidas.empty:
-            print("⚠️ Nenhuma batida encontrada no banco de dados.")
+        # 2. PUXAR BATIDAS AO VIVO DO SERVIDOR NA NUVEM
+        url_nuvem = "https://ponto-cp2.onrender.com/api/todas_batidas"
+        print(f"Baixando dados da nuvem: {url_nuvem}")
+        
+        resposta = requests.get(url_nuvem)
+        dados_nuvem = resposta.json()
+        
+        if not dados_nuvem:
+            print("⚠️ Nenhuma batida encontrada na nuvem.")
             return
+
+        # Converte o JSON recebido da nuvem em um DataFrame do Pandas
+        df_batidas = pd.DataFrame(dados_nuvem)
 
         # 3. CARREGAR O MODELO DE CONCILIAÇÃO VIA OPENPYXL
         wb = openpyxl.load_workbook(MODELO_EXCEL)

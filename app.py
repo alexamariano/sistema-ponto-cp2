@@ -1,61 +1,55 @@
 import sqlite3
+import pandas as pd
+import openpyxl
+import os
+import smtplib
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.application import MIMEApplication
 from flask import Flask, request, jsonify, render_template_string
 from datetime import datetime
 from zoneinfo import ZoneInfo
+from apscheduler.schedulers.background import BackgroundScheduler
 
 app = Flask(__name__)
-
-# Fuso horário padrão do Brasil
 FUSO_BR = ZoneInfo("America/Sao_Paulo")
+
+# ==========================================
+# CONFIGURAÇÕES DE E-MAIL E AGENDAMENTO
+# ==========================================
+EMAIL_REMETENTE = "alexde@gmail.com"  # Coloque o e-mail que vai ENVIAR
+SENHA_APP_EMAIL = "tctxosvhnfegmyek"     # Senha de 16 letras gerada no Google
+EMAIL_DESTINATARIO = "alexdealm@gmail.com" # Quem vai RECEBER a planilha pronta
+MODELO_EXCEL = "Sistema_de_Horas_Trabalhadas_DATATEMPO_CP2_conciliacao_automatica (1).xlsx"
 
 # --- 1. BASE DE DADOS CADASTRAIS (DATATEMPO) ---
 PESSOAS = {
-    "1001": "Adriana Pereira dos Santos",
-    "1002": "Alex de Almeida Mariano",
-    "1003": "Amanda do Carmo Ribeiro",
-    "1004": "Angela Bertoli",
-    "1005": "Carolina Fantini Vidigal Diniz Dias",
-    "1006": "Eliane dos Santos Oliveira",
-    "1007": "Fernanda Lopes",
-    "1008": "Flávia Reis",
-    "1009": "Junia Maria Santos",
-    "1010": "Nataly Tayê",
-    "1011": "Nathalia Arruda",
-    "1012": "Nelma Lucia dos S. B. Brandão",
-    "1013": "Rafaela Maria Resende Lara",
-    "1014": "Robert Filipe Orlando de Souza",
-    "1015": "Vitor Guilherme Miguel Rocha",
-    "1016": "Ana Luisa Nardin",
+    "1001": "Adriana Pereira dos Santos", "1002": "Alex de Almeida Mariano",
+    "1003": "Amanda do Carmo Ribeiro", "1004": "Angela Bertoli",
+    "1005": "Carolina Fantini Vidigal Diniz Dias", "1006": "Eliane dos Santos Oliveira",
+    "1007": "Fernanda Lopes", "1008": "Flávia Reis", "1009": "Junia Maria Santos",
+    "1010": "Nataly Tayê", "1011": "Nathalia Arruda", "1012": "Nelma Lucia dos S. B. Brandão",
+    "1013": "Rafaela Maria Resende Lara", "1014": "Robert Filipe Orlando de Souza",
+    "1015": "Vitor Guilherme Miguel Rocha", "1016": "Ana Luisa Nardin",
     "1017": "Renato Inácio da Silva"
 }
 
 PROJETOS = [
-    {"codigo": "PRJ-001", "nome": "BC - CONFIANÇA PIX"},
-    {"codigo": "PRJ-002", "nome": "CFI / ACCION"},
-    {"codigo": "PRJ-003", "nome": "SICOOB CREDICOM"},
-    {"codigo": "PRJ-004", "nome": "OTEMPO"},
-    {"codigo": "PRJ-005", "nome": "ESTADUAL - OTEMPO"},
-    {"codigo": "PRJ-006", "nome": "CDL/BH"},
-    {"codigo": "PRJ-007", "nome": "TOOLKIT"},
-    {"codigo": "PRJ-008", "nome": "CAMPANHA"},
-    {"codigo": "PRJ-009", "nome": "ADMINISTRATIVO"},
-    {"codigo": "PRJ-010", "nome": "OUTROS"},
+    {"codigo": "PRJ-001", "nome": "BC - CONFIANÇA PIX"}, {"codigo": "PRJ-002", "nome": "CFI / ACCION"},
+    {"codigo": "PRJ-003", "nome": "SICOOB CREDICOM"}, {"codigo": "PRJ-004", "nome": "OTEMPO"},
+    {"codigo": "PRJ-005", "nome": "ESTADUAL - OTEMPO"}, {"codigo": "PRJ-006", "nome": "CDL/BH"},
+    {"codigo": "PRJ-007", "nome": "TOOLKIT"}, {"codigo": "PRJ-008", "nome": "CAMPANHA"},
+    {"codigo": "PRJ-009", "nome": "ADMINISTRATIVO"}, {"codigo": "PRJ-010", "nome": "OUTROS"},
     {"codigo": "PRJ-011", "nome": "BETIM - TRACKING"}
 ]
 
 ATIVIDADES = [
-    {"codigo": "ATV-001", "nome": "SUPERVISÃO"},
-    {"codigo": "ATV-002", "nome": "CHECAGEM"},
-    {"codigo": "ATV-003", "nome": "CODIFICAÇÃO"},
-    {"codigo": "ATV-004", "nome": "ANÁLISE"},
-    {"codigo": "ATV-005", "nome": "RECRUTAMENTO"},
-    {"codigo": "ATV-006", "nome": "APLICAÇÃO / ENTREVISTA"},
-    {"codigo": "ATV-007", "nome": "TRATAMENTO DE DADOS"},
-    {"codigo": "ATV-008", "nome": "RELATÓRIO"},
-    {"codigo": "ATV-009", "nome": "ADMINISTRATIVO"},
-    {"codigo": "ATV-010", "nome": "APOIO OPERACIONAL"},
-    {"codigo": "ATV-011", "nome": "TRANSCRIÇÃO"},
-    {"codigo": "ATV-012", "nome": "MODERAÇÃO"}
+    {"codigo": "ATV-001", "nome": "SUPERVISÃO"}, {"codigo": "ATV-002", "nome": "CHECAGEM"},
+    {"codigo": "ATV-003", "nome": "CODIFICAÇÃO"}, {"codigo": "ATV-004", "nome": "ANÁLISE"},
+    {"codigo": "ATV-005", "nome": "RECRUTAMENTO"}, {"codigo": "ATV-006", "nome": "APLICAÇÃO / ENTREVISTA"},
+    {"codigo": "ATV-007", "nome": "TRATAMENTO DE DADOS"}, {"codigo": "ATV-008", "nome": "RELATÓRIO"},
+    {"codigo": "ATV-009", "nome": "ADMINISTRATIVO"}, {"codigo": "ATV-010", "nome": "APOIO OPERACIONAL"},
+    {"codigo": "ATV-011", "nome": "TRANSCRIÇÃO"}, {"codigo": "ATV-012", "nome": "MODERAÇÃO"}
 ]
 
 def init_db():
@@ -63,18 +57,9 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS batidas (
-            batida_id TEXT PRIMARY KEY,
-            data_hora TEXT,
-            data TEXT,
-            dia_semana TEXT,
-            pessoa_id TEXT,
-            nome TEXT,
-            tipo TEXT,
-            projeto TEXT,
-            atividade TEXT,
-            observacao TEXT,
-            origem TEXT,
-            inicio_vinculado TEXT
+            batida_id TEXT PRIMARY KEY, data_hora TEXT, data TEXT, dia_semana TEXT,
+            pessoa_id TEXT, nome TEXT, tipo TEXT, projeto TEXT, atividade TEXT,
+            observacao TEXT, origem TEXT, inicio_vinculado TEXT
         )
     ''')
     conn.commit()
@@ -82,7 +67,157 @@ def init_db():
 
 init_db()
 
-# --- 2. INTERFACE HTML ---
+# --- 2. MOTOR DE FECHAMENTO E ENVIO DE E-MAIL ---
+def fechar_folha_e_enviar():
+    print("[AUTOMAÇÃO] Iniciando fechamento da folha e envio por e-mail...")
+    try:
+        if not os.path.exists(MODELO_EXCEL):
+            print("[AUTOMAÇÃO ERRO] A planilha modelo não foi encontrada no servidor.")
+            return
+
+        df_pessoas = pd.read_excel(MODELO_EXCEL, sheet_name='Cadastro Pessoas', header=3)
+        pessoas_map = {}
+        for _, row in df_pessoas.dropna(subset=['ID']).iterrows():
+            if str(row['Status']).strip().upper() == 'ATIVO':
+                pessoas_map[str(int(row['ID']))] = {
+                    'base': str(row['Base']).strip() if pd.notna(row['Base']) else 'Hora',
+                    'taxa_util': float(row['R$/h útil']) if pd.notna(row['R$/h útil']) else 0.0,
+                    'taxa_fds': float(row['R$/h FDS']) if pd.notna(row['R$/h FDS']) else 0.0,
+                    'diaria': float(row['R$/diária']) if pd.notna(row['R$/diária']) else 0.0
+                }
+
+        conn = sqlite3.connect('ponto.db')
+        df_batidas = pd.read_sql_query("SELECT * FROM batidas ORDER BY data_hora ASC", conn)
+        conn.close()
+
+        if df_batidas.empty:
+            print("[AUTOMAÇÃO AVISO] Nenhuma batida para processar.")
+            return
+
+        wb = openpyxl.load_workbook(MODELO_EXCEL)
+        sheet_batidas = wb['Batidas']
+        sheet_registros = wb['Registros']
+
+        for r in range(5, sheet_batidas.max_row + 1):
+            for c in range(1, 14): sheet_batidas.cell(row=r, column=c).value = None
+        for r in range(5, sheet_registros.max_row + 1):
+            for c in range(1, 20): sheet_registros.cell(row=r, column=c).value = None
+
+        linha_batida = 5
+        linha_registro = 5
+        inicios_abertos = {}
+
+        for _, batida in df_batidas.iterrows():
+            b_id = str(batida['batida_id'])
+            dt_obj = pd.to_datetime(batida['data_hora'])
+            p_id = str(batida['pessoa_id'])
+            nome = str(batida['nome'])
+            tipo = str(batida['tipo']).strip().upper()
+            projeto = str(batida['projeto'])
+            atividade = str(batida['atividade'])
+            observacao = str(batida.get('observacao', '')) if pd.notna(batida.get('observacao')) else ''
+            
+            data_serial = (dt_obj - datetime(1899, 12, 30)).total_seconds() / (24 * 3600)
+            data_inteira = int(data_serial)
+            dia_semana_num = dt_obj.weekday()
+            dias_str = ["SEGUNDA-FEIRA", "TERÇA-FEIRA", "QUARTA-FEIRA", "QUINTA-FEIRA", "SEXTA-FEIRA", "SÁBADO", "DOMINGO"]
+            dia_semana = dias_str[dia_semana_num]
+            tipo_dia = "FDS/FERIADO" if dia_semana_num >= 5 else "DIA ÚTIL"
+            inicio_vinculado = str(batida.get('inicio_vinculado', '')) if pd.notna(batida.get('inicio_vinculado')) else ''
+
+            sheet_batidas.cell(row=linha_batida, column=1, value=b_id)
+            sheet_batidas.cell(row=linha_batida, column=2, value=dt_obj)
+            sheet_batidas.cell(row=linha_batida, column=3, value=f'=IF(B{linha_batida}="","",INT(B{linha_batida}))')
+            sheet_batidas.cell(row=linha_batida, column=4, value=dia_semana)
+            sheet_batidas.cell(row=linha_batida, column=5, value=int(p_id))
+            sheet_batidas.cell(row=linha_batida, column=6, value=nome)
+            sheet_batidas.cell(row=linha_batida, column=7, value=tipo)
+            sheet_batidas.cell(row=linha_batida, column=8, value=projeto)
+            sheet_batidas.cell(row=linha_batida, column=9, value=atividade)
+            sheet_batidas.cell(row=linha_batida, column=10, value=observacao)
+            sheet_batidas.cell(row=linha_batida, column=11, value="Web HTML")
+            sheet_batidas.cell(row=linha_batida, column=12, value=inicio_vinculado)
+            sheet_batidas.cell(row=linha_batida, column=13, value="INÍCIO" if tipo == "INÍCIO" else "VINCULADO")
+            linha_batida += 1
+
+            if tipo == "INÍCIO":
+                reg_id = "R" + b_id[1:]
+                info_pessoa = pessoas_map.get(p_id, {'base': 'Hora', 'taxa_util': 0.0, 'taxa_fds': 0.0, 'diaria': 0.0})
+                taxa = info_pessoa['taxa_util'] if tipo_dia == "DIA ÚTIL" else info_pessoa['taxa_fds']
+
+                sheet_registros.cell(row=linha_registro, column=1, value=reg_id)
+                sheet_registros.cell(row=linha_registro, column=2, value=dt_obj.date())
+                sheet_registros.cell(row=linha_registro, column=3, value=dia_semana)
+                sheet_registros.cell(row=linha_registro, column=4, value=tipo_dia)
+                sheet_registros.cell(row=linha_registro, column=5, value=int(p_id))
+                sheet_registros.cell(row=linha_registro, column=6, value=nome)
+                sheet_registros.cell(row=linha_registro, column=7, value=projeto)
+                sheet_registros.cell(row=linha_registro, column=8, value=atividade)
+                sheet_registros.cell(row=linha_registro, column=9, value=dt_obj.strftime("%H:%M:%S"))
+                sheet_registros.cell(row=linha_registro, column=13, value=info_pessoa['base'])
+                sheet_registros.cell(row=linha_registro, column=14, value=taxa)
+                sheet_registros.cell(row=linha_registro, column=15, value=info_pessoa['diaria'])
+                sheet_registros.cell(row=linha_registro, column=17, value="EM ABERTO")
+                sheet_registros.cell(row=linha_registro, column=18, value=1)
+                sheet_registros.cell(row=linha_registro, column=19, value=dt_obj.strftime("%Y-%m"))
+                inicios_abertos[b_id] = {'linha': linha_registro, 'data_inicio': dt_obj, 'taxa': taxa, 'base': info_pessoa['base'], 'diaria': info_pessoa['diaria']}
+                linha_registro += 1
+
+            elif tipo == "FIM":
+                chave_inicio = inicio_vinculado
+                if not chave_inicio:
+                    for k, v in reversed(list(inicios_abertos.items())):
+                        if k.endswith(f"-{p_id}"):
+                            chave_inicio = k
+                            break
+
+                if chave_inicio in inicios_abertos:
+                    dados_inicio = inicios_abertos[chave_inicio]
+                    linha_alvo = dados_inicio['linha']
+                    sheet_registros.cell(row=linha_alvo, column=10, value=dt_obj.strftime("%H:%M:%S"))
+                    horas = max(0.0, (dt_obj - dados_inicio['data_inicio']).total_seconds() / 3600.0)
+                    sheet_registros.cell(row=linha_alvo, column=11, value=round(horas, 2))
+                    sheet_registros.cell(row=linha_alvo, column=12, value=observacao)
+                    valor = dados_inicio['diaria'] if dados_inicio['base'].upper() == "DIÁRIA" else (horas * dados_inicio['taxa'])
+                    sheet_registros.cell(row=linha_alvo, column=16, value=round(valor, 2))
+                    sheet_registros.cell(row=linha_alvo, column=17, value="CONCLUÍDO")
+                    del inicios_abertos[chave_inicio]
+
+        # Salvar Planilha Localmente no Servidor
+        timestamp = datetime.now(FUSO_BR).strftime('%Y%m%d_%H%M%S')
+        nome_saida = f'Sistema_Conciliacao_Final_{timestamp}.xlsx'
+        wb.save(nome_saida)
+        print(f"[AUTOMAÇÃO] Planilha {nome_saida} gerada. Preparando envio...")
+
+        # Disparar E-mail com Anexo
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_REMETENTE
+        msg['To'] = EMAIL_DESTINATARIO
+        msg['Subject'] = f"Relatório de Fechamento de Ponto - {datetime.now(FUSO_BR).strftime('%d/%m/%Y')}"
+        corpo = "Olá,\n\nSegue em anexo a planilha consolidada com o fechamento automático do ponto e cálculos de pagamento atualizados.\n\nEste é um e-mail automático enviado pelo Sistema de Ponto CP2."
+        msg.attach(MIMEText(corpo, 'plain'))
+
+        with open(nome_saida, "rb") as f:
+            part = MIMEApplication(f.read(), Name=os.path.basename(nome_saida))
+            part['Content-Disposition'] = f'attachment; filename="{os.path.basename(nome_saida)}"'
+            msg.attach(part)
+
+        servidor = smtplib.SMTP('smtp.gmail.com', 587)
+        servidor.starttls()
+        servidor.login(EMAIL_REMETENTE, SENHA_APP_EMAIL)
+        servidor.send_message(msg)
+        servidor.quit()
+        print("[AUTOMAÇÃO SUCESSO] E-mail enviado com sucesso!")
+        
+    except Exception as e:
+        print(f"[AUTOMAÇÃO ERRO] Falha no processo: {e}")
+
+# Iniciar Agendador de Tarefas em Segundo Plano (Roda todo dia às 18:30)
+scheduler = BackgroundScheduler()
+scheduler.add_job(func=fechar_folha_e_enviar, trigger="cron", hour=18, minute=30, timezone=FUSO_BR)
+scheduler.start()
+
+# --- 3. INTERFACE HTML ---
 HTML = """
 <!DOCTYPE html>
 <html lang="pt-BR">
@@ -199,7 +334,6 @@ HTML = """
                 return;
             }
 
-            // Desabilita botões temporariamente
             document.getElementById('btn-in').disabled = true;
             document.getElementById('btn-out').disabled = true;
 
@@ -274,7 +408,7 @@ HTML = """
 </html>
 """
 
-# --- 3. ROTAS DA APLICAÇÃO ---
+# --- 4. ROTAS DA APLICAÇÃO ---
 @app.route('/')
 def index():
     return render_template_string(HTML, pessoas=PESSOAS, projetos=PROJETOS, atividades=ATIVIDADES)
@@ -285,11 +419,9 @@ def bater_ponto():
     pessoa_id = str(dados.get('pessoa_id', '')).strip()
     
     if pessoa_id not in PESSOAS:
-        return jsonify({"erro": f"ID {pessoa_id} não encontrado no cadastro de pessoas!"}), 400
+        return jsonify({"erro": f"ID {pessoa_id} não encontrado!"}), 400
 
     nome_pessoa = PESSOAS[pessoa_id]
-    
-    # PEGA HORA NO FUSO DO BRASIL (UTC-3)
     agora = datetime.now(FUSO_BR)
     
     data_hora = agora.strftime('%Y-%m-%d %H:%M:%S')
@@ -297,9 +429,7 @@ def bater_ponto():
     dias_pt = ['SEGUNDA-FEIRA', 'TERÇA-FEIRA', 'QUARTA-FEIRA', 'QUINTA-FEIRA', 'SEXTA-FEIRA', 'SÁBADO', 'DOMINGO']
     dia_semana = dias_pt[agora.weekday()]
     
-    timestamp_id = agora.strftime('%Y%m%d%H%M%S')
-    batida_id = f"B{timestamp_id}-{pessoa_id}"
-    
+    batida_id = f"B{agora.strftime('%Y%m%d%H%M%S')}-{pessoa_id}"
     tipo = dados.get('tipo')
     projeto = dados.get('projeto')
     atividade = dados.get('atividade')
@@ -308,65 +438,38 @@ def bater_ponto():
 
     conn = sqlite3.connect('ponto.db')
     cursor = conn.cursor()
-
-    # Se for FIM, busca o id da batida de INÍCIO para vincular
     inicio_vinculado = None
     if tipo == 'FIM':
-        cursor.execute('''
-            SELECT batida_id FROM batidas 
-            WHERE pessoa_id = ? AND tipo = 'INÍCIO' AND data = ?
-            ORDER BY data_hora DESC LIMIT 1
-        ''', (pessoa_id, data))
+        cursor.execute('''SELECT batida_id FROM batidas WHERE pessoa_id = ? AND tipo = 'INÍCIO' AND data = ? ORDER BY data_hora DESC LIMIT 1''', (pessoa_id, data))
         row = cursor.fetchone()
-        if row:
-            inicio_vinculado = row[0]
+        if row: inicio_vinculado = row[0]
 
-    cursor.execute('''
-        INSERT INTO batidas (batida_id, data_hora, data, dia_semana, pessoa_id, nome, tipo, projeto, atividade, observacao, origem, inicio_vinculado)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ''', (batida_id, data_hora, data, dia_semana, pessoa_id, nome_pessoa, tipo, projeto, atividade, observacao, origem, inicio_vinculado))
-    
+    cursor.execute('''INSERT INTO batidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+                   (batida_id, data_hora, data, dia_semana, pessoa_id, nome_pessoa, tipo, projeto, atividade, observacao, origem, inicio_vinculado))
     conn.commit()
     conn.close()
-
     return jsonify({"mensagem": f"Ponto de {tipo} registrado com sucesso para {nome_pessoa} às {agora.strftime('%H:%M:%S')}!"})
 
 @app.route('/api/espelho', methods=['GET'])
 def get_espelho():
     pessoa_id = str(request.args.get('id', '')).strip()
-    
-    if pessoa_id not in PESSOAS:
-        return jsonify({"erro": "ID inválido."}), 400
-
+    if pessoa_id not in PESSOAS: return jsonify({"erro": "ID inválido."}), 400
     agora = datetime.now(FUSO_BR)
     data_hoje = agora.strftime('%Y-%m-%d')
     
     conn = sqlite3.connect('ponto.db')
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    cursor.execute('''
-        SELECT data_hora, tipo, projeto, atividade, observacao 
-        FROM batidas 
-        WHERE pessoa_id = ? AND data = ?
-        ORDER BY data_hora ASC
-    ''', (pessoa_id, data_hoje))
+    cursor.execute("SELECT data_hora, tipo, projeto, atividade, observacao FROM batidas WHERE pessoa_id = ? AND data = ? ORDER BY data_hora ASC", (pessoa_id, data_hoje))
     registros = [dict(row) for row in cursor.fetchall()]
     conn.close()
-    
-    return jsonify({
-        "nome": PESSOAS[pessoa_id],
-        "registros": registros
-    })
+    return jsonify({"nome": PESSOAS[pessoa_id], "registros": registros})
 
-@app.route('/api/todas_batidas', methods=['GET'])
-def get_todas_batidas():
-    conn = sqlite3.connect('ponto.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM batidas ORDER BY data_hora ASC")
-    registros = [dict(row) for row in cursor.fetchall()]
-    conn.close()
-    return jsonify(registros)
+@app.route('/api/fechar_agora', methods=['GET'])
+def fechar_agora():
+    # Rota secreta para forçar o envio de email fora de hora para testes (Ex: acessar /api/fechar_agora)
+    fechar_folha_e_enviar()
+    return jsonify({"status": "Processo de fechamento e envio por email disparado!"})
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
