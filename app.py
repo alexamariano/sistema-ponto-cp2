@@ -17,9 +17,9 @@ FUSO_BR = ZoneInfo("America/Sao_Paulo")
 # ==========================================
 # CONFIGURAÇÕES DE E-MAIL E AGENDAMENTO
 # ==========================================
-EMAIL_REMETENTE = "alexde@gmail.com"  # Coloque o e-mail que vai ENVIAR
-SENHA_APP_EMAIL = "tctxosvhnfegmyek"     # Senha de 16 letras gerada no Google
-EMAIL_DESTINATARIO = "alexdealm@gmail.com" # Quem vai RECEBER a planilha pronta
+EMAIL_REMETENTE = "alexde@gmail.com"
+SENHA_APP_EMAIL = "tctxosvhnfegmyek"
+EMAIL_DESTINATARIO = "alexdealm@gmail.com"
 MODELO_EXCEL = "Sistema_de_Horas_Trabalhadas_DATATEMPO_CP2_conciliacao_automatica (1).xlsx"
 
 # --- 1. BASE DE DADOS CADASTRAIS (DATATEMPO) ---
@@ -72,8 +72,9 @@ def fechar_folha_e_enviar():
     print("[AUTOMAÇÃO] Iniciando fechamento da folha e envio por e-mail...")
     try:
         if not os.path.exists(MODELO_EXCEL):
-            print("[AUTOMAÇÃO ERRO] A planilha modelo não foi encontrada no servidor.")
-            return
+            msg = f"A planilha modelo '{MODELO_EXCEL}' não foi encontrada no servidor."
+            print(f"[AUTOMAÇÃO ERRO] {msg}")
+            return False, msg
 
         df_pessoas = pd.read_excel(MODELO_EXCEL, sheet_name='Cadastro Pessoas', header=3)
         pessoas_map = {}
@@ -91,8 +92,9 @@ def fechar_folha_e_enviar():
         conn.close()
 
         if df_batidas.empty:
-            print("[AUTOMAÇÃO AVISO] Nenhuma batida para processar.")
-            return
+            msg = "Nenhuma batida registrada no banco de dados para processar."
+            print(f"[AUTOMAÇÃO AVISO] {msg}")
+            return False, msg
 
         wb = openpyxl.load_workbook(MODELO_EXCEL)
         sheet_batidas = wb['Batidas']
@@ -183,13 +185,11 @@ def fechar_folha_e_enviar():
                     sheet_registros.cell(row=linha_alvo, column=17, value="CONCLUÍDO")
                     del inicios_abertos[chave_inicio]
 
-        # Salvar Planilha Localmente no Servidor
         timestamp = datetime.now(FUSO_BR).strftime('%Y%m%d_%H%M%S')
         nome_saida = f'Sistema_Conciliacao_Final_{timestamp}.xlsx'
         wb.save(nome_saida)
-        print(f"[AUTOMAÇÃO] Planilha {nome_saida} gerada. Preparando envio...")
+        print(f"[AUTOMAÇÃO] Planilha {nome_saida} gerada. Enviando e-mail...")
 
-        # Disparar E-mail com Anexo
         msg = MIMEMultipart()
         msg['From'] = EMAIL_REMETENTE
         msg['To'] = EMAIL_DESTINATARIO
@@ -202,15 +202,20 @@ def fechar_folha_e_enviar():
             part['Content-Disposition'] = f'attachment; filename="{os.path.basename(nome_saida)}"'
             msg.attach(part)
 
-        servidor = smtplib.SMTP('smtp.gmail.com', 587)
+        servidor = smtplib.SMTP('smtp.gmail.com', 587, timeout=15)
         servidor.starttls()
         servidor.login(EMAIL_REMETENTE, SENHA_APP_EMAIL)
         servidor.send_message(msg)
         servidor.quit()
-        print("[AUTOMAÇÃO SUCESSO] E-mail enviado com sucesso!")
+        
+        msg_sucesso = f"Planilha gerada ({nome_saida}) e e-mail enviado com sucesso para {EMAIL_DESTINATARIO}!"
+        print(f"[AUTOMAÇÃO SUCESSO] {msg_sucesso}")
+        return True, msg_sucesso
         
     except Exception as e:
-        print(f"[AUTOMAÇÃO ERRO] Falha no processo: {e}")
+        msg_erro = f"Falha no processo: {str(e)}"
+        print(f"[AUTOMAÇÃO ERRO] {msg_erro}")
+        return False, msg_erro
 
 # Iniciar Agendador de Tarefas em Segundo Plano (Roda todo dia às 18:30)
 scheduler = BackgroundScheduler()
@@ -465,11 +470,21 @@ def get_espelho():
     conn.close()
     return jsonify({"nome": PESSOAS[pessoa_id], "registros": registros})
 
+@app.route('/api/todas_batidas', methods=['GET'])
+def get_todas_batidas():
+    conn = sqlite3.connect('ponto.db')
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM batidas ORDER BY data_hora ASC")
+    registros = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return jsonify(registros)
+
 @app.route('/api/fechar_agora', methods=['GET'])
 def fechar_agora():
-    # Rota secreta para forçar o envio de email fora de hora para testes (Ex: acessar /api/fechar_agora)
-    fechar_folha_e_enviar()
-    return jsonify({"status": "Processo de fechamento e envio por email disparado!"})
+    sucesso, mensagem = fechar_folha_e_enviar()
+    status_code = 200 if sucesso else 500
+    return jsonify({"sucesso": sucesso, "detalhes": mensagem}), status_code
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
