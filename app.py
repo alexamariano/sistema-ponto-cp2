@@ -492,7 +492,6 @@ def painel_admin():
     conn = sqlite3.connect('ponto.db')
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
-    # Puxa tudo, do mais recente para o mais antigo
     cursor.execute("SELECT * FROM batidas ORDER BY data_hora DESC")
     registros = [dict(row) for row in cursor.fetchall()]
     conn.close()
@@ -510,11 +509,16 @@ def painel_admin():
             tr:nth-child(even) { background-color: #f2f2f2; }
             .badge-inicio { color: green; font-weight: bold; }
             .badge-fim { color: red; font-weight: bold; }
+            .btn-limpar { background-color: #dc3545; color: white; border: none; padding: 10px 15px; cursor: pointer; border-radius: 5px; font-weight: bold; }
+            .btn-limpar:hover { background-color: #c82333; }
         </style>
     </head>
     <body>
         <h2>Auditoria de Dados na Nuvem (Render)</h2>
-        <p>Total de batidas registradas no servidor: <b>{{ registros|length }}</b></p>
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+            <p>Total de batidas registradas: <b>{{ registros|length }}</b></p>
+            <button class="btn-limpar" onclick="limparBanco()">⚠️ Zerar Banco de Dados (Testes)</button>
+        </div>
         <table>
             <tr>
                 <th>Data / Hora (BR)</th>
@@ -533,10 +537,32 @@ def painel_admin():
             </tr>
             {% endfor %}
         </table>
+
+        <script>
+            function limparBanco() {
+                if(confirm("Tem certeza que deseja apagar TODAS as batidas? Isso não pode ser desfeito!")) {
+                    fetch('/api/limpar_banco')
+                    .then(r => r.json())
+                    .then(d => {
+                        alert(d.status);
+                        location.reload();
+                    });
+                }
+            }
+        </script>
     </body>
     </html>
     """
     return render_template_string(html, registros=registros)
+
+@app.route('/api/limpar_banco', methods=['GET'])
+def limpar_banco():
+    conn = sqlite3.connect('ponto.db')
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM batidas") # Apaga todos os registros
+    conn.commit()
+    conn.close()
+    return jsonify({"status": "Banco de dados limpo com sucesso! Prontinho para novos testes."})
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
