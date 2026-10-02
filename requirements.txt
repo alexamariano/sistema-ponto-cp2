@@ -4,3 +4,4 @@ pandas
 openpyxl
 apscheduler
 resend
+psycopg2-binary

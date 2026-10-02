@@ -1,9 +1,10 @@
-import sqlite3
+import os
 import pandas as pd
 import openpyxl
-import os
 import base64
 import resend
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from flask import Flask, request, jsonify, render_template_string
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -13,14 +14,25 @@ app = Flask(__name__)
 FUSO_BR = ZoneInfo("America/Sao_Paulo")
 
 # ==========================================
-# CONFIGURAÇÕES DE E-MAIL E NUVEM
+# CONFIGURAÇÕES DE E-MAIL E BANCO DE DADOS
 # ==========================================
-# Cole aqui a sua API Key gerada no Resend (começa com re_...)
 RESEND_API_KEY = os.environ.get("RESEND_API_KEY", "SUA_API_KEY_RESEND_AQUI")
+DATABASE_URL = os.environ.get("DATABASE_URL")
 EMAIL_DESTINATARIO = "alexdealm@gmail.com"
 MODELO_EXCEL = "Sistema_de_Horas_Trabalhadas_DATATEMPO_CP2_conciliacao_automatica (1).xlsx"
 
 resend.api_key = RESEND_API_KEY
+
+def get_db_connection():
+    if DATABASE_URL:
+        # Conecta ao PostgreSQL (Supabase / Render)
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
+    else:
+        # Fallback para testes locais em SQLite se DATABASE_URL não estiver definida
+        import sqlite3
+        conn = sqlite3.connect('ponto.db')
+        return conn
 
 # --- 1. BASE DE DADOS CADASTRAIS (DATATEMPO) ---
 PESSOAS = {
@@ -53,21 +65,31 @@ ATIVIDADES = [
 ]
 
 def init_db():
-    conn = sqlite3.connect('ponto.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS batidas (
-            batida_id TEXT PRIMARY KEY, data_hora TEXT, data TEXT, dia_semana TEXT,
-            pessoa_id TEXT, nome TEXT, tipo TEXT, projeto TEXT, atividade TEXT,
-            observacao TEXT, origem TEXT, inicio_vinculado TEXT
+            batida_id VARCHAR(50) PRIMARY KEY,
+            data_hora VARCHAR(50),
+            data VARCHAR(20),
+            dia_semana VARCHAR(30),
+            pessoa_id VARCHAR(20),
+            nome VARCHAR(100),
+            tipo VARCHAR(20),
+            projeto VARCHAR(100),
+            atividade VARCHAR(100),
+            observacao TEXT,
+            origem VARCHAR(50),
+            inicio_vinculado VARCHAR(50)
         )
     ''')
     conn.commit()
+    cursor.close()
     conn.close()
 
 init_db()
 
-# --- 2. MOTOR DE FECHAMENTO E ENVIO DE E-MAIL VIA API HTTP ---
+# --- 2. MOTOR DE FECHAMENTO E ENVIO DE E-MAIL ---
 def fechar_folha_e_enviar():
     print("[AUTOMAÇÃO] Iniciando fechamento da folha e envio por e-mail...")
     try:
@@ -87,7 +109,7 @@ def fechar_folha_e_enviar():
                     'diaria': float(row['R$/diária']) if pd.notna(row['R$/diária']) else 0.0
                 }
 
-        conn = sqlite3.connect('ponto.db')
+        conn = get_db_connection()
         df_batidas = pd.read_sql_query("SELECT * FROM batidas ORDER BY data_hora ASC", conn)
         conn.close()
 
@@ -188,12 +210,10 @@ def fechar_folha_e_enviar():
         wb.save(nome_saida)
         print(f"[AUTOMAÇÃO] Planilha {nome_saida} gerada. Enviando via API do Resend...")
 
-        # Converte o arquivo Excel para Base64 para anexar via API
         with open(nome_saida, "rb") as f:
             excel_bytes = f.read()
             excel_b64 = base64.b64encode(excel_bytes).decode('utf-8')
 
-        # Envio do e-mail usando Resend (API HTTP - Porta 443)
         params = {
             "from": "Sistema Ponto CP2 <onboarding@resend.dev>",
             "to": [EMAIL_DESTINATARIO],
@@ -208,7 +228,6 @@ def fechar_folha_e_enviar():
         }
 
         email_res = resend.Emails.send(params)
-        
         msg_sucesso = f"Planilha gerada ({nome_saida}) e e-mail enviado via Resend (ID: {email_res.get('id', 'ok')}) para {EMAIL_DESTINATARIO}!"
         print(f"[AUTOMAÇÃO SUCESSO] {msg_sucesso}")
         return True, msg_sucesso
@@ -218,7 +237,6 @@ def fechar_folha_e_enviar():
         print(f"[AUTOMAÇÃO ERRO] {msg_erro}")
         return False, msg_erro
 
-# Agendador de tarefas automático (Todo dia às 18:30)
 scheduler = BackgroundScheduler()
 scheduler.add_job(func=fechar_folha_e_enviar, trigger="cron", hour=18, minute=30, timezone=FUSO_BR)
 scheduler.start()
@@ -442,17 +460,22 @@ def bater_ponto():
     observacao = dados.get('observacao', '')
     origem = "Web HTML"
 
-    conn = sqlite3.connect('ponto.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
     inicio_vinculado = None
     if tipo == 'FIM':
-        cursor.execute('''SELECT batida_id FROM batidas WHERE pessoa_id = ? AND tipo = 'INÍCIO' AND data = ? ORDER BY data_hora DESC LIMIT 1''', (pessoa_id, data))
+        if DATABASE_URL:
+            cursor.execute('''SELECT batida_id FROM batidas WHERE pessoa_id = %s AND tipo = 'INÍCIO' AND data = %s ORDER BY data_hora DESC LIMIT 1''', (pessoa_id, data))
+        else:
+            cursor.execute('''SELECT batida_id FROM batidas WHERE pessoa_id = ? AND tipo = 'INÍCIO' AND data = ? ORDER BY data_hora DESC LIMIT 1''', (pessoa_id, data))
         row = cursor.fetchone()
         if row: inicio_vinculado = row[0]
 
-    cursor.execute('''INSERT INTO batidas VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''', 
+    placeholder = "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)" if DATABASE_URL else "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+    cursor.execute(f'''INSERT INTO batidas VALUES {placeholder}''', 
                    (batida_id, data_hora, data, dia_semana, pessoa_id, nome_pessoa, tipo, projeto, atividade, observacao, origem, inicio_vinculado))
     conn.commit()
+    cursor.close()
     conn.close()
     return jsonify({"mensagem": f"Ponto de {tipo} registrado com sucesso para {nome_pessoa} às {agora.strftime('%H:%M:%S')}!"})
 
@@ -463,37 +486,44 @@ def get_espelho():
     agora = datetime.now(FUSO_BR)
     data_hoje = agora.strftime('%Y-%m-%d')
     
-    conn = sqlite3.connect('ponto.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
-    cursor.execute("SELECT data_hora, tipo, projeto, atividade, observacao FROM batidas WHERE pessoa_id = ? AND data = ? ORDER BY data_hora ASC", (pessoa_id, data_hoje))
-    registros = [dict(row) for row in cursor.fetchall()]
+    conn = get_db_connection()
+    if DATABASE_URL:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+        cursor.execute("SELECT data_hora, tipo, projeto, atividade, observacao FROM batidas WHERE pessoa_id = %s AND data = %s ORDER BY data_hora ASC", (pessoa_id, data_hoje))
+        registros = [dict(row) for row in cursor.fetchall()]
+    else:
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute("SELECT data_hora, tipo, projeto, atividade, observacao FROM batidas WHERE pessoa_id = ? AND data = ? ORDER BY data_hora ASC", (pessoa_id, data_hoje))
+        registros = [dict(row) for row in cursor.fetchall()]
+        
+    cursor.close()
     conn.close()
     return jsonify({"nome": PESSOAS[pessoa_id], "registros": registros})
 
 @app.route('/api/todas_batidas', methods=['GET'])
 def get_todas_batidas():
-    conn = sqlite3.connect('ponto.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    conn = get_db_connection()
+    if DATABASE_URL:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+    else:
+        cursor = conn.cursor()
     cursor.execute("SELECT * FROM batidas ORDER BY data_hora ASC")
     registros = [dict(row) for row in cursor.fetchall()]
+    cursor.close()
     conn.close()
     return jsonify(registros)
 
-@app.route('/api/fechar_agora', methods=['GET'])
-def fechar_agora():
-    sucesso, mensagem = fechar_folha_e_enviar()
-    status_code = 200 if sucesso else 500
-    return jsonify({"sucesso": sucesso, "detalhes": mensagem}), status_code
-
 @app.route('/admin', methods=['GET'])
 def painel_admin():
-    conn = sqlite3.connect('ponto.db')
-    conn.row_factory = sqlite3.Row
-    cursor = conn.cursor()
+    conn = get_db_connection()
+    if DATABASE_URL:
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+    else:
+        cursor = conn.cursor()
     cursor.execute("SELECT * FROM batidas ORDER BY data_hora DESC")
     registros = [dict(row) for row in cursor.fetchall()]
+    cursor.close()
     conn.close()
     
     html = """
@@ -514,7 +544,7 @@ def painel_admin():
         </style>
     </head>
     <body>
-        <h2>Auditoria de Dados na Nuvem (Render)</h2>
+        <h2>Auditoria de Dados na Nuvem (PostgreSQL / Supabase)</h2>
         <div style="display: flex; justify-content: space-between; align-items: center;">
             <p>Total de batidas registradas: <b>{{ registros|length }}</b></p>
             <button class="btn-limpar" onclick="limparBanco()">⚠️ Zerar Banco de Dados (Testes)</button>
@@ -540,7 +570,7 @@ def painel_admin():
 
         <script>
             function limparBanco() {
-                if(confirm("Tem certeza que deseja apagar TODAS as batidas? Isso não pode ser desfeito!")) {
+                if(confirm("Tem certeza que deseja apagar TODAS as batidas do PostgreSQL?")) {
                     fetch('/api/limpar_banco')
                     .then(r => r.json())
                     .then(d => {
@@ -557,12 +587,19 @@ def painel_admin():
 
 @app.route('/api/limpar_banco', methods=['GET'])
 def limpar_banco():
-    conn = sqlite3.connect('ponto.db')
+    conn = get_db_connection()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM batidas") # Apaga todos os registros
+    cursor.execute("DELETE FROM batidas")
     conn.commit()
+    cursor.close()
     conn.close()
-    return jsonify({"status": "Banco de dados limpo com sucesso! Prontinho para novos testes."})
+    return jsonify({"status": "Banco de dados PostgreSQL limpo com sucesso!"})
+
+@app.route('/api/fechar_agora', methods=['GET'])
+def fechar_agora():
+    sucesso, mensagem = fechar_folha_e_enviar()
+    status_code = 200 if sucesso else 500
+    return jsonify({"sucesso": sucesso, "detalhes": mensagem}), status_code
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
