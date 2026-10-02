@@ -24,12 +24,14 @@ MODELO_EXCEL = "Sistema_de_Horas_Trabalhadas_DATATEMPO_CP2_conciliacao_automatic
 resend.api_key = RESEND_API_KEY
 
 def get_db_connection():
-    if DATABASE_URL:
-        # Conecta ao PostgreSQL (Supabase / Render)
-        conn = psycopg2.connect(DATABASE_URL)
+    db_url = os.environ.get("DATABASE_URL")
+    if db_url:
+        # Limpa possíveis aspas acidentais ou espaços extras da variável
+        db_url = db_url.strip().strip('"').strip("'")
+        conn = psycopg2.connect(db_url)
         return conn
     else:
-        # Fallback para testes locais em SQLite se DATABASE_URL não estiver definida
+        # Fallback para testes locais em SQLite
         import sqlite3
         conn = sqlite3.connect('ponto.db')
         return conn
