@@ -26,8 +26,13 @@ resend.api_key = RESEND_API_KEY
 def get_db_connection():
     db_url = os.environ.get("DATABASE_URL")
     if db_url:
-        # Limpa possíveis aspas acidentais ou espaços extras da variável
+        # Limpa aspas, espaços e remove parametros incompativeis com psycopg2 (como pgbouncer=true)
         db_url = db_url.strip().strip('"').strip("'")
+        if "?pgbouncer=true" in db_url:
+            db_url = db_url.replace("?pgbouncer=true", "")
+        if "&pgbouncer=true" in db_url:
+            db_url = db_url.replace("&pgbouncer=true", "")
+            
         conn = psycopg2.connect(db_url)
         return conn
     else:
